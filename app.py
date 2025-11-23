@@ -1,103 +1,93 @@
 import streamlit as st
 from openai import OpenAI
 import tempfile
-import mimetypes
 
-# Initialize OpenAI client
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 st.title("🎤 GPT Voice Assistant with TTS")
-st.write("Speak into the microphone and receive a spoken reply.")
+st.write("Speak into the mic and receive a spoken reply.")
 
-# --- AUDIO INPUT ---
-audio_bytes = st.audio_input("Record your voice:")
+# Audio input
+uploaded_audio = st.audio_input("Record your voice:")
 
 
-# --- SAFE & ERROR-PROOF AUDIO HANDLING ---
+# ---------- AUDIO FORMAT DETECTION ----------
 def detect_audio_suffix(audio_bytes):
-    """Return correct file extension based on MIME type."""
-    mime_type = mimetypes.guess_type("file", strict=False)[0]
-
-    # Streamlit often sends audio/webm by default
-    if audio_bytes[:4] == b"\x1A\x45\xDF\xA3":
+    """Detect audio type using file signature."""
+    if audio_bytes.startswith(b"\x1A\x45\xDF\xA3"):   # WEBM header
         return ".webm"
-
-    # WAV file signature (RIFF)
-    if audio_bytes[:4] == b"RIFF":
+    if audio_bytes.startswith(b"RIFF"):  # WAV header
         return ".wav"
-
-    # Fallback
-    return ".wav"
+    return ".wav"  # default
 
 
-def transcribe_audio(file_bytes):
-    """Convert mic audio → text using Whisper with full safety."""
+# ---------- TRANSCRIBE WITH WHISPER ----------
+def transcribe_audio(uploaded_file):
+    file_bytes = uploaded_file.getvalue()
+
     suffix = detect_audio_suffix(file_bytes)
 
-    # Save as temporary audio file
+    # Write audio to a temp file
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_audio:
         temp_audio.write(file_bytes)
-        temp_audio_path = temp_audio.name
+        temp_path = temp_audio.name
 
-    # Open temporary file for Whisper
-    with open(temp_audio_path, "rb") as f:
+    # Send to Whisper
+    with open(temp_path, "rb") as f:
         response = client.audio.transcriptions.create(
             model="gpt-4o-transcribe",
             file=f
         )
-
     return response.text
 
 
-# --- GPT SHORT RESPONSE ---
+# ---------- GPT RESPONSE (SHORT REPLIES) ----------
 def ask_gpt(question):
-    completion = client.chat.completions.create(
+    response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {
                 "role": "system",
                 "content": (
                     "You are a helpful AI voice assistant. "
-                    "Always reply in short responses. "
-                    "Limit replies to 2–3 concise sentences."
+                    "Always reply in short responses, 2–3 sentences only."
                 )
             },
-            {"role": "user", "content": question}
+            {"role": "user", "content": question},
         ],
-        max_tokens=150
+        max_tokens=150,
     )
-    return completion.choices[0].message.content
+    return response.choices[0].message.content
 
 
-# --- TEXT TO SPEECH ---
+# ---------- TEXT TO SPEECH ----------
 def text_to_speech(text):
-    """Convert GPT text → spoken audio."""
-    response = client.audio.speech.create(
+    speech = client.audio.speech.create(
         model="gpt-4o-mini-tts",
         voice="alloy",
         input=text,
         format="mp3"
     )
-    return response.read()
+    return speech.read()  # MP3 bytes
 
 
-# --- MAIN LOGIC ---
-if audio_bytes:
-    st.write("⏳ Processing... please wait.")
-
+# ---------- MAIN APP LOGIC ----------
+if uploaded_audio:
     try:
-        # STEP 1 — Transcribe
-        text_input = transcribe_audio(audio_bytes)
-        st.write("🗣️ You said:", text_input)
+        st.write("⏳ Processing your voice...")
 
-        # STEP 2 — GPT reply
-        reply = ask_gpt(text_input)
+        # Step 1: Speech → Text
+        transcript = transcribe_audio(uploaded_audio)
+        st.write("🗣️ You said:", transcript)
+
+        # Step 2: GPT → Reply
+        reply = ask_gpt(transcript)
         st.write("🤖 Assistant:", reply)
 
-        # STEP 3 — Play TTS
+        # Step 3: Reply → Speech
         tts_audio = text_to_speech(reply)
         st.audio(tts_audio, format="audio/mp3")
 
     except Exception as e:
         st.error("An error occurred while processing your audio. Please try again.")
-        st.write("Error message:", str(e))
+        st.write("Error:", str(e))
