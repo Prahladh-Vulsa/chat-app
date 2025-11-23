@@ -1,26 +1,64 @@
 import streamlit as st
-import openai
-import base64
+from openai import OpenAI
+import tempfile
+import mimetypes
 
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+# Initialize OpenAI client
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 st.title("🎤 GPT Voice Assistant with TTS")
-st.write("Speak into the mic and get a short 2–3 sentence spoken reply.")
+st.write("Speak into the microphone and receive a spoken reply.")
 
-# ---- RECORD AUDIO ----
+# --- AUDIO INPUT ---
 audio_bytes = st.audio_input("Record your voice:")
 
 
-# ---- GPT TEXT RESPONSE ----
+# --- SAFE & ERROR-PROOF AUDIO HANDLING ---
+def detect_audio_suffix(audio_bytes):
+    """Return correct file extension based on MIME type."""
+    mime_type = mimetypes.guess_type("file", strict=False)[0]
+
+    # Streamlit often sends audio/webm by default
+    if audio_bytes[:4] == b"\x1A\x45\xDF\xA3":
+        return ".webm"
+
+    # WAV file signature (RIFF)
+    if audio_bytes[:4] == b"RIFF":
+        return ".wav"
+
+    # Fallback
+    return ".wav"
+
+
+def transcribe_audio(file_bytes):
+    """Convert mic audio → text using Whisper with full safety."""
+    suffix = detect_audio_suffix(file_bytes)
+
+    # Save as temporary audio file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_audio:
+        temp_audio.write(file_bytes)
+        temp_audio_path = temp_audio.name
+
+    # Open temporary file for Whisper
+    with open(temp_audio_path, "rb") as f:
+        response = client.audio.transcriptions.create(
+            model="gpt-4o-transcribe",
+            file=f
+        )
+
+    return response.text
+
+
+# --- GPT SHORT RESPONSE ---
 def ask_gpt(question):
-    completion = openai.chat.completions.create(
+    completion = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {
                 "role": "system",
                 "content": (
                     "You are a helpful AI voice assistant. "
-                    "Always reply in short answers. "
+                    "Always reply in short responses. "
                     "Limit replies to 2–3 concise sentences."
                 )
             },
@@ -31,38 +69,35 @@ def ask_gpt(question):
     return completion.choices[0].message.content
 
 
-# ---- WHISPER TRANSCRIPTION ----
-def transcribe_audio(file_bytes):
-    response = openai.audio.transcriptions.create(
-        model="gpt-4o-transcribe",
-        file=("audio.wav", file_bytes, "audio/wav")
-    )
-    return response.text
-
-
-# ---- OPENAI TTS AUDIO ----
+# --- TEXT TO SPEECH ---
 def text_to_speech(text):
-    speech_response = openai.audio.speech.create(
+    """Convert GPT text → spoken audio."""
+    response = client.audio.speech.create(
         model="gpt-4o-mini-tts",
         voice="alloy",
         input=text,
         format="mp3"
     )
-    return speech_response.read()  # MP3 bytes
+    return response.read()
 
 
-# ---- MAIN FLOW ----
+# --- MAIN LOGIC ---
 if audio_bytes:
-    st.write("⏳ Processing your voice...")
+    st.write("⏳ Processing... please wait.")
 
-    # Step 1: Convert voice → text
-    text_input = transcribe_audio(audio_bytes)
-    st.write("🗣️ You said:", text_input)
+    try:
+        # STEP 1 — Transcribe
+        text_input = transcribe_audio(audio_bytes)
+        st.write("🗣️ You said:", text_input)
 
-    # Step 2: Ask GPT
-    reply = ask_gpt(text_input)
-    st.write("🤖 Assistant:", reply)
+        # STEP 2 — GPT reply
+        reply = ask_gpt(text_input)
+        st.write("🤖 Assistant:", reply)
 
-    # Step 3: Convert GPT → Speech
-    audio_output = text_to_speech(reply)
-    st.audio(audio_output, format="audio/mp3")
+        # STEP 3 — Play TTS
+        tts_audio = text_to_speech(reply)
+        st.audio(tts_audio, format="audio/mp3")
+
+    except Exception as e:
+        st.error("An error occurred while processing your audio. Please try again.")
+        st.write("Error message:", str(e))
